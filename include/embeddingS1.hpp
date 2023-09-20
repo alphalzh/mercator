@@ -766,6 +766,7 @@ double embeddingS1_t::compute_random_ensemble_clustering_for_degree_class(int d1
       da = std::fabs(z12 - z13);
     }
     da = std::min(da, (2.0 * PI) - da);
+    // To prevent overflow
     if(da < NUMERICAL_ZERO)
     {
       p23 += 1;
@@ -804,6 +805,7 @@ double embeddingS1_t::compute_pairwise_loglikelihood(int v1, double t1, int v2, 
 
 
 // =~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=
+// TODO:MAIN METHOD
 // =~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=
 void embeddingS1_t::embed()
 {
@@ -811,17 +813,42 @@ void embeddingS1_t::embed()
   time0 = time_since_epoch_in_seconds();
   time_started = std::time(NULL);
   // Initialization.
+  // Ziheng: initialize all parameters before starting any iterations.
+  // See the method for details (method runs several other methods)
   initialize();
   // Gets current time.
   time1 = time_since_epoch_in_seconds();
   if(REFINE_MODE)
   {
     // Loads the parameters from the .inf_coord file.
+    // Ziheng: loads the parameters from a file if in the refine mode. In this mode the parameters are already inferred.
     load_already_inferred_parameters();
   }
   if(!REFINE_MODE)
   {
     // Pre-processing: infers the parameters used for the embedding.
+    // Ziheng: infers the parameters beta, kappa and mu.
+    // For beta, initialize it as 2 + rand(0, 1)
+    // Calculate mu given beta and average degree k
+    // For kappa, runs infer_kappas_given_beta_for_degree_class()
+    // random_ensemble_kappa_per_degree_class is set to the degree number for each degree class
+    // random_ensemble_expected_degree_per_degree_class is calculated by adding all connection probabilities of n nodes with degree k with other nodes.
+    // if the calculated expected degree is within the error threshold of the actual degrees, stop
+    // else, modify the kappas and continue until convergence or reach max iterations (L1522): (degree class degree k - expected degree) * random value between 0 and 1
+    // kappas will determine the connection probabilities (L1494)
+    // Then these parameters are used to compute the cumulative distribution of connection probabilities
+    // the probabilities are stored in cumul_prob_kgkp, cumul_prob_kgkp[*it1][tmp_cumul] = *it2
+    // For the previous formula, it1 represents nodes with degree k1, it2 represents nodes with degree k2, tmp_cumul is the cumulated probability of connection
+    // Then the clustering of the generated random ensemble is calculated using monte carlo integration.
+    // For each degree class k with degree k1,
+    // select two neighbor nodes with degree k2 and k3, by using the cumulative distribution of connection probabilities between node classes
+    // calculate the probabilities that k1 and k2, k1 and k3 are actually neighbors respectively. These probabilities are then used to calculate
+    // the angular distance between k1 and k2, k1 and k3, and finally the angular distance between k2 and k3.
+    // Finally, the probability of k2 and k3 to be connected can be calculated by the angular distance theta between them.
+    // This probability is used in calculating the average clustering coefficient.
+    // If the computed average clustering coefficient is above the threshold error compared to the expected value,
+    // beta is updated and the above value inferrence (starting from kappas) are calculated again.
+    // When this iteration for beta convergence is done, we have a (S1) model to describe the original network.
     infer_parameters();
   }
   // Gets current time.
@@ -1696,26 +1723,39 @@ void embeddingS1_t::initialize()
 
   if(!QUIET_MODE) { std::clog                                                                                                  << std::endl; }
   if(!QUIET_MODE) { std::clog << "Loading edgelist..."; }
+  // Ziheng: loads the edge list of original network from file.
+  // builds the adjacency list between edges
+  // records number of vertices, records correspondence of vertices and their names (if exists)
+  // initializes variables: [adjacency_list, nb_vertices, nb_edges, name2num, num2name]
   load_edgelist();
   if(!QUIET_MODE) { std::clog << "...................................................................done."                    << std::endl; }
 
   if(!QUIET_MODE) { std::clog                                                                                                  << std::endl; }
   if(!QUIET_MODE) { std::clog << "Checking number of connected components..."; }
+  // Ziheng: check if the graph is fully connected.
+  // If not, save the edge list of the largest fully connected component to a file and prompts the user to use
+  // that subgraph instead.
   check_connected_components();
   if(!QUIET_MODE) { std::clog << "............................................done."                                           << std::endl; }
 
   if(!QUIET_MODE) { std::clog                                                                                                  << std::endl; }
   if(!QUIET_MODE) { std::clog << "Analyzing degrees..."; }
+  // Ziheng: Gather information about the network's node degrees.
+  // initialize variables: [average_degree, nb_vertices_degree_gt_one, degree, degree2vertices, degree_class, sum_degree_of_neighbors]
   analyze_degrees();
   if(!QUIET_MODE) { std::clog << "..................................................................done."                     << std::endl; }
 
   if(!QUIET_MODE) { std::clog                                                                                                  << std::endl; }
   if(!QUIET_MODE) { std::clog << "Computing local clustering..."; }
   compute_clustering();
+  // Ziheng: Computes the clustering coefficient of the original network.
+  // initialize variables: [nbtriangles(stores number of triangles for each vertex), average_clustering(L619), nb_vertices_degree_gt_one]
   if(!QUIET_MODE) { std::clog << ".........................................................done."                              << std::endl; }
 
   if(!QUIET_MODE) { std::clog                                                                                                  << std::endl; }
   if(!QUIET_MODE) { std::clog << "Ordering vertices..."; }
+  // Ziheng: use onion decomposition to order the vertices based on their layer (L878). See https://www.nature.com/articles/srep31708
+  // initialize variables: [ordered_list_of_vertices]
   order_vertices();
   if(!QUIET_MODE) { std::clog << "..................................................................done."                     << std::endl; }
   if(!QUIET_MODE) { std::clog                                                                                                  << std::endl; }
